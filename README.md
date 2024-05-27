@@ -1,5 +1,3 @@
-Here's a beatified version of your `readme.md` file, with proper formatting and structure:
-
 # GLSA-OVAL
 
 **GLSA-OVAL** is an early prototype aimed at generating OVAL (Open Vulnerability and Assessment Language) files from Gentoo Linux Security Advisories (GLSAs) and related vulnerability information.
