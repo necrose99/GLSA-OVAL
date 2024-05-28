@@ -6,11 +6,11 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/antchfx/htmlquery"
 	"github.com/pandatix/go-cvss/31"
 	"github.com/quay/goval-parser/oval"
 	"github.com/umisama/go-cvss/v3"
-	"github.com/PuerkitoBio/goquery"
 )
 
 // extractCVERefsFromPage extracts CVE references from a GLSA advisory page
