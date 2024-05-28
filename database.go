@@ -2,45 +2,75 @@ package main
 
 import (
 	"database/sql"
-	"fmt"
+	"log"
 
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/quay/goval-parser/oval"
 )
 
-// storeOVALDefinitionsInDB stores OVAL definitions in a SQLite database
-func storeOVALDefinitionsInDB(definitions *oval.Definitions) error {
-	// Open or create an SQLite database file
+// initializeDatabase initializes the SQLite database
+func initializeDatabase() (*sql.DB, error) {
 	db, err := sql.Open("sqlite3", "oval_GLSA.db")
 	if err != nil {
-		return fmt.Errorf("error opening SQLite database: %v", err)
+		return nil, err
 	}
-	defer db.Close()
 
-	// Create a table to store OVAL definitions (if it doesn't exist)
-	_, err = db.Exec(`
-        CREATE TABLE IF NOT EXISTS oval_definitions (
-            id TEXT PRIMARY KEY,
-            definition TEXT NOT NULL
-        )
-    `)
+	// Create tables if they do not exist
+	query := `
+	CREATE TABLE IF NOT EXISTS definitions (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		title TEXT,
+		description TEXT
+	);
+	CREATE TABLE IF NOT EXISTS references (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		definition_id INTEGER,
+		ref_id TEXT,
+		FOREIGN KEY(definition_id) REFERENCES definitions(id)
+	);
+	`
+
+	if _, err := db.Exec(query); err != nil {
+		return nil, err
+	}
+
+	return db, nil
+}
+
+// saveDefinition saves a single OVAL definition to the database
+func saveDefinition(db *sql.DB, definition *oval.Definition) error {
+	tx, err := db.Begin()
 	if err != nil {
-		return fmt.Errorf("error creating table: %v", err)
+		return err
 	}
 
-	// Insert OVAL definitions into the SQLite table
+	result, err := tx.Exec("INSERT INTO definitions (title, description) VALUES (?, ?)", definition.Title, definition.Description)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	definitionID, err := result.LastInsertId()
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	for _, ref := range definition.References {
+		if _, err := tx.Exec("INSERT INTO references (definition_id, ref_id) VALUES (?, ?)", definitionID, ref.RefID); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+// saveDefinitions saves multiple OVAL definitions to the database
+func saveDefinitions(db *sql.DB, definitions *oval.Definitions) error {
 	for _, definition := range definitions.Definitions {
-		definitionXML, err := definition.MarshalXML()
-		if err != nil {
-			return fmt.Errorf("error serializing OVAL definition: %v", err)
-		}
-
-		_, err = db.Exec("INSERT INTO oval_definitions (id, definition) VALUES (?, ?)", definition.ID, string(definitionXML))
-		if err != nil {
-			return fmt.Errorf("error inserting OVAL definition: %v", err)
+		if err := saveDefinition(db, definition); err != nil {
+			return err
 		}
 	}
-
-	fmt.Println("OVAL definitions stored in SQLite database")
 	return nil
 }
