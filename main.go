@@ -2,6 +2,9 @@ package main
 
 import (
 	"log"
+	"strings"
+
+	"github.com/PuerkitoBio/goquery"
 )
 
 func main() {

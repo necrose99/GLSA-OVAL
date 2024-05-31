@@ -2,16 +2,25 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
-
+	"io/ioutil"
+	"os"
+	"encoding/json"
+	"encoding/xml"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/antchfx/htmlquery"
-	"github.com/pandatix/go-cvss/31"
+	gocvss20 "github.com/pandatix/go-cvss/20"
+	gocvss30 "github.com/pandatix/go-cvss/30"
+	gocvss31 "github.com/pandatix/go-cvss/31"
+	gocvss40 "github.com/pandatix/go-cvss/40"
 	"github.com/quay/goval-parser/oval"
-	"github.com/umisama/go-cvss/v3"
-)
+	"github.com/clbanning/mxj/v2" 
+	"github.com/beevik/etree"
+)  
 
 // extractCVERefsFromPage extracts CVE references from a GLSA advisory page
 func extractCVERefsFromPage(url string) ([]string, error) {
@@ -41,9 +50,39 @@ func extractCVERefsFromPage(url string) ([]string, error) {
 	return cveRefs, nil
 }
 
+// determineCVSSVersion determines the CVSS version from a given string
+func determineCVSSVersion(cvssString string) (interface{}, string, error) {
+	switch {
+	default: // Should be CVSS v2.0 or is invalid
+		cvss, err := gocvss20.ParseVector(cvssString)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid CVSS vector: %s", cvssString)
+		}
+		return cvss, "CVSS 2.0", nil
+	case strings.HasPrefix(cvssString, "CVSS:3.0"):
+		cvss, err := gocvss30.ParseVector(cvssString)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid CVSS vector: %s", cvssString)
+		}
+		return cvss, "CVSS 3.0", nil
+	case strings.HasPrefix(cvssString, "CVSS:3.1"):
+		cvss, err := gocvss31.ParseVector(cvssString)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid CVSS vector: %s", cvssString)
+		}
+		return cvss, "CVSS 3.1", nil
+	case strings.HasPrefix(cvssString, "CVSS:4.0"):
+		cvss, err := gocvss40.ParseVector(cvssString)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid CVSS vector: %s", cvssString)
+		}
+		return cvss, "CVSS 4.0", nil
+	}
+}
+
 // generateOVALDefinitions generates OVAL definitions from GLSA advisory data
 func generateOVALDefinitions(doc *goquery.Document) (*oval.Definitions, error) {
-	definitions := oval.NewDefinitions()
+	definitions := &oval.Definitions{}
 
 	doc.Find(".glsa-item").Each(func(i int, s *goquery.Selection) {
 		id := s.Find("h2").Text()
@@ -60,15 +99,38 @@ func generateOVALDefinitions(doc *goquery.Document) (*oval.Definitions, error) {
 		}
 
 		// Create OVAL definition for this advisory
-		definition := oval.NewDefinition(id, "Vulnerability description", true, nil)
+		definition := &oval.Definition{
+			ID:          id,
+			Description: "Vulnerability description",
+			Advisory:    &oval.Advisory{},
+			Metadata:    &oval.Metadata{},
+		}
 
-		// Add CVE references to the definition
+		// Add CVE references and fetch CVSS scores
 		for _, ref := range cveRefs {
-			definition.References = append(definition.References, oval.Reference{RefID: ref})
+			definition.Advisory.Refs = append(definition.Advisory.Refs, oval.Reference{RefID: ref})
+
+			// Fetch and log the CVSS score
+			cvssString := "" // Replace with actual CVSS string extraction logic
+			cvss, version, err := determineCVSSVersion(cvssString)
+			if err != nil {
+				log.Printf("Error determining CVSS version for %s: %v\n", ref, err)
+			} else {
+				log.Printf("CVSS version for %s: %s, CVSS data: %+v\n", ref, version, cvss)
+			}
 		}
 
 		// Create a test for the OVAL definition
-		test := oval.NewTest(fmt.Sprintf("%s-test", id), fmt.Sprintf("%s-obj", id), fmt.Sprintf("%s-state", id), "cpe:/a:gentoo:gentoo", "Check for vulnerable package")
+		}
+		if err := out.Encode(oval.Definitions.Definitions[0].Gentoo); err != nil {
+			log.Fatal(err)
+		}
+		test := &oval.Test{
+			ID:      fmt.Sprintf("%s-test", id),
+			Comment: "Check for vulnerable package",
+			Object:  &oval.Object{Comment: fmt.Sprintf("%s-obj", id)},
+			State:   &oval.State{Comment: fmt.Sprintf("%s-state", id)},
+		}
 
 		// Add the test to the definition
 		definition.Tests = []*oval.Test{test}
