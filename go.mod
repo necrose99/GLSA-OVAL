@@ -5,8 +5,10 @@ go 1.22.3
 require (
 	github.com/PuerkitoBio/goquery v1.9.2
 	github.com/antchfx/htmlquery v1.3.1
+	github.com/antchfx/xmlquery v1.4.0
 	github.com/beevik/etree v1.4.0
 	github.com/clbanning/mxj/v2 v2.7.0
+	github.com/dsnet/compress v0.0.1
 	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/pandatix/go-cvss v0.6.2
 	github.com/quay/goval-parser v0.8.8

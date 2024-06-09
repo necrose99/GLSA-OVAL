@@ -2,9 +2,6 @@ package main
 
 import (
 	"log"
-	"strings"
-
-	"github.com/PuerkitoBio/goquery"
 )
 
 func main() {
@@ -39,7 +36,7 @@ func main() {
 	}
 
 	// Write definitions to an XML file
-	if err := writeOVALDefinitionsToFile(definitions, "GLSA.oval"); err != nil {
+	if err := writeOVALDefinitionsToFile(definitions, "GLSA-oval.xml"); err != nil {
 		log.Fatalf("Error writing OVAL definitions to file: %v", err)
 	}
 }

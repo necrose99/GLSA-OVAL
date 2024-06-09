@@ -1,28 +1,42 @@
-project_name: example
+project_name: GLSA-OVAL
+#project_binary: glsa-oval
+before:
+  hooks:
+    - go mod tidy
+dist: release
+source:
+  enabled: true
+  name_template: '{{ .ProjectName }}-{{ .Tag }}-source'
+checksum:
+  name_template: '{{ .ProjectName }}-{{ .Tag }}-checksums.txt'
 builds:
-  - env: [CGO_ENABLED=0]
+  -
+    env:
+      - CGO_ENABLED=0
+      binary: glsa-oval
+    ldflags:
+      - -s -w
+      - -X "github.com/necrose99/GLSA-OVAL/cmd.CLIVersion={{ .Tag }}"
+      - -X "github.com/necrose99/GLSA-OVAL/cmd.BuildTime={{ time "2006-01-02 15:04:05 MST" }}"
+      - -X "github.com/necrose99/GLSA-OVAL/cmd.BuildCommit={{ .FullCommit }}"
     goos:
       - linux
       - windows
-      - darwin
+      # since on wifes laptop until i can replace mine , or desktops psu lightning is fun to even surge protectors :-( , i'm kinda hosed windows it is with wsl2 and a minimal linux
     goarch:
       - amd64
+      - arm
       - arm64
-dockers:
-- image_templates: ["ghcr.io/goreleaser/example:{{ .Version }}"]
-  dockerfile: Dockerfile
-  build_flag_templates:
-  - --label=org.opencontainers.image.title={{ .ProjectName }}
-  - --label=org.opencontainers.image.description={{ .ProjectName }}
-  - --label=org.opencontainers.image.url=https://github.com/goreleaser/example
-  - --label=org.opencontainers.image.source=https://github.com/goreleaser/example
-  - --label=org.opencontainers.image.version={{ .Version }}
-  - --label=org.opencontainers.image.created={{ time "2006-01-02T15:04:05Z07:00" }}
-  - --label=org.opencontainers.image.revision={{ .FullCommit }}
-  - --label=org.opencontainers.image.licenses=MIT
-nfpms:
-- maintainer: Carlos A Becker <root@carlosbecker.dev>
-  description: Sample project.
-  homepage: https://github.com/caarlos0/tasktimer
-  license: MIT
-  formats:
+    goarm:
+      - 6
+      - 7
+archives:
+  - format: binary # this removes the tar of the archives, leaving the binaries alone
+    name_template: glsa-oval-{{ .Tag }}-{{ .Os }}-{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^Merge pull request'

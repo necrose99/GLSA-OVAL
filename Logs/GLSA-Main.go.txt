@@ -1,0 +1,187 @@
+package main
+
+import (
+	"database/sql"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"regexp"
+
+	"github.com/PuerkitoBio/goquery"
+	"github.com/quay/goval-parser/oval"
+	_ "github.com/mattn/go-sqlite3"
+)
+
+//  Purpose : GLSA page https://security.gentoo.org Gentoo Linux Securtiy advisories to OVAL XML format
+// github.com/vulsio/goval-dictionar is a sub module for VULS.io , 
+// OpenSCAP  etc...  github/mageni/ https://www.mageni.net/  likewise can parse OVAL for secuity testing for cve's n breakages/ Systems complinace/QA
+// 1) Standalone GLSA to OVAL file genorator 
+// 2 ) have a ready OVAL Sqlite DB if using goval-dictionar / vuls.io / Vulsrepo webui  to scan systems quick hack work arround perhaps.. 
+// https://oval.mitre.org/ /https://github.com/CISecurity/OVALRepo  Open Vulnerability and Assessment Language/MITRE format
+// perhaps in time https://security.gentoo.org/glsa/oval/glsa-{$DATE-TIME}.oval  
+
+// Gentoo DEV's might make use of Claude ai/ GPT4 generated hakish code to something useful... 
+
+
+// extractCVERefsFromPage extracts CVE references from a specific GLSA advisory page
+func extractCVERefsFromPage(url string) ([]string, error) {
+	res, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("error fetching page %s: %v", url, err)
+	}
+	defer res.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(res.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing HTML for page %s: %v", url, err)
+	}
+
+	cveRefs := make([]string, 0)
+	cveRegex := regexp.MustCompile(`CVE-\d{4}-\d+`)
+
+	doc.Find(".glsa-description").Each(func(j int, t *goquery.Selection) {
+		text := t.Text()
+		matches := cveRegex.FindAllString(text, -1)
+		cveRefs = append(cveRefs, matches...)
+	})
+
+	return cveRefs, nil
+}
+
+// generateOVALDefinitions generates OVAL definitions from the GLSA advisory list page
+func generateOVALDefinitions(doc *goquery.Document) (*oval.Definitions, error) {
+	definitions := &oval.Definitions{}
+
+	doc.Find(".glsa-item").Each(func(i int, s *goquery.Selection) {
+		id := s.Find("h2").Text()
+		advisoryLink, exists := s.Find("h2 a").Attr("href")
+		if !exists {
+			log.Printf("No advisory link found for %s\n", id)
+			return
+		}
+
+		cveRefs, err := extractCVERefsFromPage("https://security.gentoo.org" + advisoryLink)
+		if err != nil {
+			log.Printf("Error extracting CVE references for %s: %v\n", id, err)
+			return
+		}
+
+		// Create OVAL definition for this advisory
+		definition := &oval.Definition{
+			ID:          id,
+			Title:       "Vulnerability description",
+			Description: "Details about the vulnerability",
+			Advisory:    &oval.Advisory{References: cveRefs},
+		}
+
+		// Create a test for the OVAL definition
+		test := &oval.Test{
+			ID:   fmt.Sprintf("%s-test", id),
+			Kind: "dpkginfo_test",
+			Check: &oval.Check{
+				ID:      fmt.Sprintf("%s-obj", id),
+				Comment: "Check for vulnerable package",
+				Kind:    "object",
+			},
+			State: &oval.State{
+				ID:      fmt.Sprintf("%s-state", id),
+				Comment: "Check package version",
+				Kind:    "state",
+			},
+		}
+
+		// Create a version test for the OVAL definition
+		versionTest := &oval.VersionTest{
+			ID:           fmt.Sprintf("%s-version", id),
+			CheckExist:   "at least one",
+			Comment:      "Check version is less than",
+			CheckVersion: "less than",
+			DataType:     oval.DataTypeVersion,
+		}
+
+		// Append the test and version test to the definition
+		test.Version = versionTest
+		definition.Tests = append(definition.Tests, test)
+		definitions.Definitions = append(definitions.Definitions, definition)
+	})
+
+	return definitions, nil
+}
+
+// storeOVALDefinitionsInDB stores the generated OVAL definitions in an SQLite database
+func storeOVALDefinitionsInDB(definitions *oval.Definitions) error {
+	db, err := sql.Open("sqlite3", "oval_GLSA.db")
+	if err != nil {
+		return fmt.Errorf("error opening SQLite database: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS oval_definitions (id TEXT PRIMARY KEY, definition TEXT NOT NULL)`)
+	if err != nil {
+		return fmt.Errorf("error creating table: %v", err)
+	}
+
+	for _, definition := range definitions.Definitions {
+		definitionXML, err := oval.Marshal(definition)
+		if err != nil {
+			log.Printf("Error serializing OVAL definition: %v\n", err)
+			continue
+		}
+
+		_, err = db.Exec("INSERT INTO oval_definitions (id, definition) VALUES (?, ?)", definition.ID, string(definitionXML))
+		if err != nil {
+			log.Printf("Error inserting OVAL definition: %v\n", err)
+			continue
+		}
+	}
+
+	fmt.Println("OVAL definitions stored in SQLite database")
+	return nil
+}
+
+// writeOVALDefinitionsToFile writes the OVAL definitions to an XML file
+func writeOVALDefinitionsToFile(definitions *oval.Definitions, filename string) error {
+	ovalXML, err := oval.Marshal(definitions)
+	if err != nil {
+		return fmt.Errorf("failed to generate OVAL XML: %v", err)
+	}
+
+	err = os.WriteFile(filename, ovalXML, 0644)
+	if err != nil {
+		return fmt.Errorf("error writing OVAL file: %v", err)
+	}
+
+	fmt.Println("OVAL definitions written to", filename)
+	return nil
+}
+
+func main() {
+	// Fetch and parse GLSA advisory list page from https://security.gentoo.org/glsa
+	res, err := http.Get("https://security.gentoo.org/glsa")
+	if err != nil {
+		log.Fatalf("Error fetching GLSA list page: %v", err)
+	}
+	defer res.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(res.Body)
+	if err != nil {
+		log.Fatalf("Error parsing HTML for GLSA list page: %v", err)
+	}
+
+	// Generate OVAL definitions from the parsed GLSA data
+	definitions, err := generateOVALDefinitions(doc)
+	if err != nil {
+		log.Fatalf("Error generating OVAL definitions: %v", err)
+	}
+
+	// Store the generated OVAL definitions in a SQLite database
+	if err := storeOVALDefinitionsInDB(definitions); err != nil {
+		log.Fatalf("Error storing OVAL definitions in database: %v", err)
+	}
+
+	// Write the OVAL definitions to an XML file
+	if err := writeOVALDefinitionsToFile(definitions, "GLSA.oval"); err != nil {
+		log.Fatalf("Error writing OVAL definitions to file: %v", err)
+	}
+}
