@@ -14,7 +14,14 @@ require (
 require (
 	github.com/andybalholm/cascadia v1.3.2 // indirect
 	github.com/antchfx/xpath v1.3.0 // indirect
+	github.com/cpuguy83/go-md2man/v2 v2.0.4 // indirect
+	github.com/gobuffalo/here v0.6.7 // indirect
+	github.com/gocomply/xsd2go v0.1.8 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
-	golang.org/x/net v0.24.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
+	github.com/iancoleman/strcase v0.3.0 // indirect
+	github.com/markbates/pkger v0.17.1 // indirect
+	github.com/russross/blackfriday/v2 v2.1.0 // indirect
+	github.com/urfave/cli v1.22.15 // indirect
+	golang.org/x/net v0.26.0 // indirect
+	golang.org/x/text v0.16.0 // indirect
 )

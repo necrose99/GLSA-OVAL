@@ -23,6 +23,7 @@ func parseCVSS(vector string) (interface{}, string, error) {
 		cvss, err := gocvss20.ParseVector(vector)
 		if err != nil {
 			return nil, "", err
+		}
 		return cvss, "2.0", nil
 	case strings.HasPrefix(vector, "CVSS:3.0"):
 		cvss, err := gocvss30.ParseVector(vector)
