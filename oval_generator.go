@@ -1,12 +1,17 @@
+// oval_generator.go
+
+// # [GLSA-OVAL]
+// import "path/to/oval.xsd" as xsd
+
 package main
+
 
 import (
 	"encoding/xml"
 	"fmt"
 	"io/ioutil"
-	"strings"
+	"log"
 
-	"github.com/puerkitoBio/goquery"
 	"github.com/quay/goval-parser/oval"
 )
 
@@ -23,52 +28,8 @@ func writeOVALDefinitionsToFile(definitions *oval.Definitions, fileName string) 
 	return nil
 }
 
-func generateOVALDefinitions(doc *goquery.Document) (*oval.Definitions, error) {
-	definitions := &oval.Definitions{}
-
-	doc.Find(".glsa-item").Each(func(i int, s *goquery.Selection) {
-		id := s.Find("h2").Text()
-		advisoryLink, exists := s.Find("h2 a").Attr("href")
-		if not exists {
-			fmt.Printf("No advisory link found for %s\n", id)
-			return
-		}
-
-		cveRefs, err := extractCVERefsFromPage("https://security.gentoo.org" + advisoryLink)
-		if err != nil {
-			fmt.Printf("Error extracting CVE references for %s: %v\n", id, err)
-			return
-		}
-
-		definition := &oval.Definition{
-			ID:          id,
-			Description: "Vulnerability description",
-			Advisory:    &oval.Advisory{},
-			Metadata: &oval.Metadata{
-				References: []oval.Reference{
-					{
-						Source: "GENTOO_SECURITY_ADVISORY",
-						RefID:  "GLSA-" + id,
-						RefURL: "https://security.gentoo.org/glsa",
-					},
-				},
-			},
-		}
-
-		for _, ref := range cveRefs {
-			definition.Advisory.Refs = append(definition.Advisory.Refs, oval.Reference{RefID: ref})
-		}
-
-		test := &oval.Test{
-			ID:      fmt.Sprintf("%s-test", id),
-			Comment: "Check for vulnerable package",
-			Object:  &oval.Object{Comment: fmt.Sprintf("%s-obj", id)},
-			State:   &oval.State{Comment: fmt.Sprintf("%s-state", id)},
-		}
-
-		definition.Tests = []*oval.Test{test}
-		definitions.Definitions = append(definitions.Definitions, definition)
-	})
-
-	return definitions, nil
+func storeOVALDefinitions(definitions *oval.Definitions) {
+	if err := writeOVALDefinitionsToFile(definitions, "GLSA-oval.xml"); err != nil {
+		log.Fatalf("Error writing OVAL definitions to file: %v", err)
+	}
 }

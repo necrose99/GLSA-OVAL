@@ -18,25 +18,14 @@ func main() {
 		log.Fatalf("Error fetching GLSA page: %v", err)
 	}
 
-	// Parse GLSA page
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(pageContent))
+	// Parse GLSA page and store OVAL definitions in a buffer
+	definitions, err := parseGLSA(pageContent)
 	if err != nil {
 		log.Fatalf("Error parsing GLSA page: %v", err)
 	}
 
-	// Generate OVAL definitions
-	definitions, err := generateOVALDefinitions(doc)
-	if err != nil {
-		log.Fatalf("Error generating OVAL definitions: %v", err)
-	}
+	// Store OVAL definitions
+	storeOVALDefinitions(definitions)
 
-	// Save definitions to the database
-	if err := saveDefinitions(db, definitions); err != nil {
-		log.Fatalf("Error saving definitions to database: %v", err)
-	}
-
-	// Write definitions to an XML file
-	if err := writeOVALDefinitionsToFile(definitions, "GLSA-oval.xml"); err != nil {
-		log.Fatalf("Error writing OVAL definitions to file: %v", err)
-	}
+	// Additional logic can be added here if needed
 }

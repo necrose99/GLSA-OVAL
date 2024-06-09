@@ -8,14 +8,44 @@ import (
 	"strings"
 
 	"github.com/antchfx/htmlquery"
-	"github.com/puerkitoBio/goquery"
+	"github.com/PuerkitoBio/goquery"
+	"github.com/quay/goval-parser/oval"
 	gocvss20 "github.com/pandatix/go-cvss/20"
 	gocvss30 "github.com/pandatix/go-cvss/30"
 	gocvss31 "github.com/pandatix/go-cvss/31"
 	gocvss40 "github.com/pandatix/go-cvss/40"
-	"github.com/quay/goval-parser/oval"
 )
 
+// parseCVSS parses a CVSS vector string and returns the parsed CVSS object and its version.
+func parseCVSS(vector string) (interface{}, string, error) {
+	switch {
+	default: // Should be CVSS v2.0 or is invalid
+		cvss, err := gocvss20.ParseVector(vector)
+		if err != nil {
+			return nil, "", err
+		return cvss, "2.0", nil
+	case strings.HasPrefix(vector, "CVSS:3.0"):
+		cvss, err := gocvss30.ParseVector(vector)
+		if err != nil {
+			return nil, "", err
+		}
+		return cvss, "3.0", nil
+	case strings.HasPrefix(vector, "CVSS:3.1"):
+		cvss, err := gocvss31.ParseVector(vector)
+		if err != nil {
+			return nil, "", err
+		}
+		return cvss, "3.1", nil
+	case strings.HasPrefix(vector, "CVSS:4.0"):
+		cvss, err := gocvss40.ParseVector(vector)
+		if err != nil {
+			return nil, "", err
+		}
+		return cvss, "4.0", nil
+	}
+}
+
+// extractCVERefsFromPage extracts CVE references from a given advisory page.
 func extractCVERefsFromPage(url string) ([]string, error) {
 	res, err := http.Get(url)
 	if err != nil {
@@ -28,21 +58,22 @@ func extractCVERefsFromPage(url string) ([]string, error) {
 		return nil, fmt.Errorf("error parsing HTML for page %s: %v", url, err)
 	}
 
-	cveRefs := make([]string, 0)
-	cveRegex := regexp.MustCompile(`CVE-\d{4}-\d+`)
-
-	xpathExpr := `//div[@class="glsa-description"]//text()`
+	// Example XPath expression to find CVE references
+	xpathExpr := `//a[contains(@href, 'cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-')]/text()`
 	nodes := htmlquery.Find(doc, xpathExpr)
+	if nodes == nil {
+		return nil, fmt.Errorf("no CVE references found")
+	}
 
+	var cveRefs []string
 	for _, node := range nodes {
-		text := strings.TrimSpace(htmlquery.InnerText(node))
-		matches := cveRegex.FindAllString(text, -1)
-		cveRefs = append(cveRefs, matches...)
+		cveRefs = append(cveRefs, htmlquery.InnerText(node))
 	}
 
 	return cveRefs, nil
 }
 
+// scrapeRemediation extracts remediation steps from a given advisory page.
 func scrapeRemediation(url string) (string, error) {
 	res, err := http.Get(url)
 	if err != nil {
@@ -71,35 +102,7 @@ func scrapeRemediation(url string) (string, error) {
 	return remediationSteps.String(), nil
 }
 
-func determineCVSSVersion(cvssString string) (interface{}, string, error) {
-	switch {
-	default: // Should be CVSS v2.0 or is invalid
-		cvss, err := gocvss20.ParseVector(cvssString)
-		if err != nil {
-			return nil, "", fmt.Errorf("invalid CVSS vector: %s", cvssString)
-		}
-		return cvss, "CVSS 2.0", nil
-	case strings.HasPrefix(cvssString, "CVSS:3.0"):
-		cvss, err := gocvss30.ParseVector(cvssString)
-		if err != nil {
-			return nil, "", fmt.Errorf("invalid CVSS vector: %s", cvssString)
-		}
-		return cvss, "CVSS 3.0", nil
-	case strings.HasPrefix(cvssString, "CVSS:3.1"):
-		cvss, err := gocvss31.ParseVector(cvssString)
-		if err != nil {
-			return nil, "", fmt.Errorf("invalid CVSS vector: %s", cvssString)
-		}
-		return cvss, "CVSS 3.1", nil
-	case strings.HasPrefix(cvssString, "CVSS:4.0"):
-		cvss, err := gocvss40.ParseVector(cvssString)
-		if err != nil {
-			return nil, "", fmt.Errorf("invalid CVSS vector: %s", cvssString)
-		}
-		return cvss, "CVSS 4.0", nil
-	}
-}
-
+// generateOVALDefinitions generates OVAL definitions from the GLSA page content.
 func generateOVALDefinitions(doc *goquery.Document) (*oval.Definitions, error) {
 	definitions := &oval.Definitions{}
 
@@ -117,49 +120,41 @@ func generateOVALDefinitions(doc *goquery.Document) (*oval.Definitions, error) {
 			return
 		}
 
-		// Create OVAL definition for this advisory
+		remediation, err := scrapeRemediation("https://security.gentoo.org" + advisoryLink)
+		if err != nil {
+			fmt.Printf("Error extracting remediation steps for %s: %v\n", id, err)
+			return
+		}
+
 		definition := &oval.Definition{
 			ID:          id,
-			Title:       "Title", // Add title if available
 			Description: "Vulnerability description",
 			Advisory:    oval.Advisory{},
-			//Metadata:    oval.Metadata{}, // Adjust according to actual structure
+			Metadata: &oval.Metadata{
+				References: []oval.Reference{
+					{
+						Source: "GENTOO_SECURITY_ADVISORY",
+						RefID:  "GLSA-" + id,
+						RefURL: "https://security.gentoo.org/glsa",
+					},
+				},
+			},
 		}
 
-		// Add CVE references and fetch CVSS scores
 		for _, ref := range cveRefs {
 			definition.Advisory.Refs = append(definition.Advisory.Refs, oval.Reference{RefID: ref})
-
-			// Fetch and log the CVSS score
-			cvssString := "" // Replace with actual CVSS string extraction logic
-			cvss, version, err := determineCVSSVersion(cvssString)
-			if err != nil {
-				log.Printf("Error determining CVSS version for %s: %v\n", ref, err)
-			} else {
-				log.Printf("CVSS version for %s: %s, CVSS data: %+v\n", ref, version, cvss)
-			}
 		}
 
-		// Fetch remediation steps
-		remediationSteps, err := scrapeRemediation("https://security.gentoo.org" + advisoryLink)
-		if err != nil {
-			log.Printf("Error fetching remediation steps for %s: %v\n", id, err)
-		} else {
-			definition.Description += "\n\n" + remediationSteps
-		}
+		definition.Advisory.Remediation = remediation
 
-		// Create a test for the OVAL definition
 		test := &oval.Test{
 			ID:      fmt.Sprintf("%s-test", id),
 			Comment: "Check for vulnerable package",
-			Object:  oval.Object{Comment: fmt.Sprintf("%s-obj", id)},
-			State:   oval.State{Comment: fmt.Sprintf("%s-state", id)},
+			Object:  &oval.Object{Comment: fmt.Sprintf("%s-obj", id)},
+			State:   &oval.State{Comment: fmt.Sprintf("%s-state", id)},
 		}
 
-		// Add the test to the definition
-		// definition.Tests = []oval.Test{test}
-
-		// Append the definition to the list of definitions
+		definition.Tests = []*oval.Test{test}
 		definitions.Definitions = append(definitions.Definitions, definition)
 	})
 
