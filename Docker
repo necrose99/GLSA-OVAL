@@ -1,0 +1,7 @@
+FROM python:3.13.0b1-slim-bullseye
+
+RUN pip3 install distro==1.9.0 urllib3 BeautifulSoup vulnlist  requests
+ENV PYTHONPATH=/
+ADD glsa_parser.py 
+
+RUN chmod +X glsa_parser.py && python3 glsa_parser.py

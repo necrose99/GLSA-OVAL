@@ -1,13 +1,13 @@
 package main
 
 import (
+	"encoding/xml"
 	"fmt"
 	"log"
 	"net/http"
-	"regexp"
 	"strings"
-
-	"github.com/antchfx/htmlquery"
+	"sync"
+	"os"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/quay/goval-parser/oval"
 	gocvss20 "github.com/pandatix/go-cvss/20"
@@ -15,6 +15,118 @@ import (
 	gocvss31 "github.com/pandatix/go-cvss/31"
 	gocvss40 "github.com/pandatix/go-cvss/40"
 )
+
+type GLSAParser struct {
+	baseURL string
+	client  *http.Client
+}
+
+func NewGLSAParser(baseURL string) *GLSAParser {
+	return &GLSAParser{
+		baseURL: baseURL,
+		client:  &http.Client{},
+	}
+}
+
+func (p *GLSAParser) ScrapeGLSAs() error {
+	glsaURL := p.baseURL + "/glsa"
+	doc, err := p.fetchAndParseHTML(glsaURL)
+	if err != nil {
+		return err
+	}
+
+	glsaLinks, err := extractGLSALinks(doc)
+	if err != nil {
+		return err
+	}
+
+	var wg sync.WaitGroup
+	resultChan := make(chan *ovalparser.OvalDefinitions, len(glsaLinks))
+
+	for _, link := range glsaLinks {
+		glsaPageURL := p.baseURL + link
+		wg.Add(1)
+		go func(url string) {
+			defer wg.Done()
+			ovalDefinitions, err := p.parseGLSAPage(url)
+			if err != nil {
+				log.Printf("Error parsing GLSA page %s: %v", url, err)
+				return
+			}
+			resultChan <- ovalDefinitions
+		}(glsaPageURL)
+	}
+
+	wg.Wait()
+	close(resultChan)
+
+	for ovalDefinitions := range resultChan {
+		ovalXML, err := xml.MarshalIndent(ovalDefinitions, "", "  ")
+		if err != nil {
+			log.Printf("Error generating OVAL XML: %v", err)
+			continue
+		}
+		saveOvalXML(ovalXML)
+	}
+
+	return nil
+}
+
+func (p *GLSAParser) fetchAndParseHTML(url string) (*goquery.Document, error) {
+	resp, err := p.client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	return doc, nil
+}
+
+func extractGLSALinks(doc *goquery.Document) ([]string, error) {
+	var links []string
+	doc.Find("a[href*='/glsa/']").Each(func(i int, s *goquery.Selection) {
+		href, exists := s.Attr("href")
+		if exists {
+			links = append(links, href)
+		}
+	})
+	return links, nil
+}
+
+func (p *GLSAParser) parseGLSAPage(glsaPageURL string) (*ovalparser.OvalDefinitions, error) {
+	doc, err := p.fetchAndParseHTML(glsaPageURL)
+	if err != nil {
+		return nil, err
+	}
+
+	affectedPackages, err := extractAffectedPackages(doc)
+	if err != nil {
+		return nil, err
+	}
+
+	resolutionSteps, err := extractResolutionSteps(doc)
+	if err != nil {
+		return nil, err
+	}
+
+	cveReferences, err := extractCVEReferences(doc)
+	if err != nil {
+		return nil, err
+	}
+
+	ovalDescription := "Description of the vulnerability"
+	ovalDefinitions, err := generateOvalXML(glsaPageURL, affectedPackages, resolutionSteps, cveReferences, ovalDescription)
+	if err != nil {
+		return nil, err
+	}
+
+	return ovalDefinitions, nil
+}
 
 // parseCVSS parses a CVSS vector string and returns the parsed CVSS object and its version.
 func parseCVSS(vector string) (interface{}, string, error) {
@@ -46,118 +158,51 @@ func parseCVSS(vector string) (interface{}, string, error) {
 	}
 }
 
-// extractCVERefsFromPage extracts CVE references from a given advisory page.
-func extractCVERefsFromPage(url string) ([]string, error) {
-	res, err := http.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("error fetching page %s: %v", url, err)
-	}
-	defer res.Body.Close()
+// extractCVEReferences extracts CVE references from a given advisory page.
+func extractCVEReferences(doc *goquery.Document) ([]oval.CveReference, error) {
+	var cveReferences []oval.CveReference
 
-	doc, err := htmlquery.Parse(res.Body)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing HTML for page %s: %v", url, err)
-	}
-
-	// Example XPath expression to find CVE references
-	xpathExpr := `//a[contains(@href, 'cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-')]/text()`
-	nodes := htmlquery.Find(doc, xpathExpr)
-	if nodes == nil {
-		return nil, fmt.Errorf("no CVE references found")
-	}
-
-	var cveRefs []string
-	for _, node := range nodes {
-		cveRefs = append(cveRefs, htmlquery.InnerText(node))
-	}
-
-	return cveRefs, nil
-}
-
-// scrapeRemediation extracts remediation steps from a given advisory page.
-func scrapeRemediation(url string) (string, error) {
-	res, err := http.Get(url)
-	if err != nil {
-		return "", fmt.Errorf("error fetching page %s: %v", url, err)
-	}
-	defer res.Body.Close()
-
-	doc, err := htmlquery.Parse(res.Body)
-	if err != nil {
-		return "", fmt.Errorf("error parsing HTML for page %s: %v", url, err)
-	}
-
-	xpathExpr := `//h3[text()='Resolution']/following-sibling::div[@class='card card-body bg-light pb-0 mb-3']/pre/text()`
-	nodes := htmlquery.Find(doc, xpathExpr)
-	if nodes == nil {
-		return "", fmt.Errorf("no remediation steps found")
-	}
-
-	var remediationSteps strings.Builder
-	for _, node := range nodes {
-		step := strings.TrimSpace(htmlquery.InnerText(node))
-		remediationSteps.WriteString(step)
-		remediationSteps.WriteString("\n")
-	}
-
-	return remediationSteps.String(), nil
-}
-
-// generateOVALDefinitions generates OVAL definitions from the GLSA page content.
-func generateOVALDefinitions(doc *goquery.Document) (*oval.Definitions, error) {
-	definitions := &oval.Definitions{}
-
-	doc.Find(".glsa-item").Each(func(i int, s *goquery.Selection) {
-		id := s.Find("h2").Text()
-		advisoryLink, exists := s.Find("h2 a").Attr("href")
+	doc.Find("h3:contains('References')").NextUntil("h3").Find("a[href*='/CVE-']").Each(func(i int, s *goquery.Selection) {
+		href, exists := s.Attr("href")
 		if !exists {
-			fmt.Printf("No advisory link found for %s\n", id)
 			return
 		}
 
-		cveRefs, err := extractCVERefsFromPage("https://security.gentoo.org" + advisoryLink)
+		cveID := strings.TrimPrefix(strings.TrimPrefix(href, "https://cve.mitre.org/cgi-bin/cvename.cgi?name="), "CVE-")
+		cveDescription := s.Text()
+
+		cvss, version, err := parseCVSS(cveDescription)
 		if err != nil {
-			fmt.Printf("Error extracting CVE references for %s: %v\n", id, err)
+			log.Printf("Error parsing CVSS vector for %s: %v", cveID, err)
 			return
 		}
 
-		remediation, err := scrapeRemediation("https://security.gentoo.org" + advisoryLink)
-		if err != nil {
-			fmt.Printf("Error extracting remediation steps for %s: %v\n", id, err)
-			return
-		}
-
-		definition := &oval.Definition{
-			ID:          id,
-			Description: "Vulnerability description",
-			Advisory:    oval.Advisory{},
-			Metadata: &oval.Metadata{
-				References: []oval.Reference{
-					{
-						Source: "GENTOO_SECURITY_ADVISORY",
-						RefID:  "GLSA-" + id,
-						RefURL: "https://security.gentoo.org/glsa",
-					},
-				},
-			},
-		}
-
-		for _, ref := range cveRefs {
-			definition.Advisory.Refs = append(definition.Advisory.Refs, oval.Reference{RefID: ref})
-		}
-
-		definition.Advisory.Remediation = remediation
-
-		test := &oval.Test{
-			ID:      fmt.Sprintf("%s-test", id),
-			Comment: "Check for vulnerable package",
-			Object:  &oval.Object{Comment: fmt.Sprintf("%s-obj", id)},
-			State:   &oval.State{Comment: fmt.Sprintf("%s-state", id)},
-		}
-
-		definition.Tests = []*oval.Test{test}
-		definitions.Definitions = append(definitions.Definitions, definition)
+		cveReferences = append(cveReferences, oval.CveReference{
+			CveID:       cveID,
+			Description: cveDescription,
+			CvssVersion: version,
+			CvssScore:   cvss,
+		})
 	})
 
-	return definitions, nil
+	return cveReferences, nil
 }
+
+// Other functions for extracting affected packages, resolution steps,
+// generating OVAL XML, and saving OVAL XML go here...
+
+func main() {
+	parser := NewGLSAParser("https://security.gentoo.org")
+	if err := parser.ScrapeGLSAs(); err != nil {
+		log.Fatalf("Error scraping GLSAs: %v", err)
+	}
+}
+[
+
+)
+// glsa-oval.xml fix to add glsa-oval-date-24hourtime.xml"
+func saveOvalXML(ovalXML []byte) error {
+    filename := "glsa-oval.xml"
+    return os.WriteFile(filename, ovalXML, 0644)
+}
+]
